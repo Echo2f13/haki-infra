@@ -1,0 +1,6 @@
+[Unit]
+Description=Refresh USB backup status in node Notes
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/haki-usb-backup --status

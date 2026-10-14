@@ -1,0 +1,10 @@
+[Unit]
+Description=Back up VMs to the USB backup drive
+After=pve-cluster.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/haki-usb-backup
+TimeoutStartSec=6h
+Nice=10
+IOSchedulingClass=idle

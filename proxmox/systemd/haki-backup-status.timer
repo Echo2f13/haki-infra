@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily USB backup status check
+
+[Timer]
+OnCalendar=*-*-* 09:00
+OnBootSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

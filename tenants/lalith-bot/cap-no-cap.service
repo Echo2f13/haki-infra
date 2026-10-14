@@ -1,0 +1,20 @@
+[Unit]
+Description=Cap No Cap Discord Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=bot
+Group=bot
+WorkingDirectory=/opt/cap-no-cap
+ExecStart=/opt/cap-no-cap/.venv/bin/python /opt/cap-no-cap/bot.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/cap-no-cap
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

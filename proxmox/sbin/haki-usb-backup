@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# haki-usb-backup — back up every VM plus host config to the USB drive's Server folder
+# when it is plugged in, then unmount so the drive can be unplugged.
+#   haki-usb-backup            run a backup (started by udev on plug-in)
+#   haki-usb-backup --status   refresh the status line in the node's Notes (daily timer)
+cd /
+set -euo pipefail
+
+UUID=83F6-DBB2
+MNT=/mnt/haki-usb-backup
+DIR="$MNT/Server/proxmox"
+KEEP=4                 # backups kept per VM
+MIN_FREE_GB=150        # never let backups push the drive below this
+MIN_GAP_HOURS=12       # skip if a backup succeeded this recently (e.g. reboot with drive attached)
+DUE_DAYS=7
+STATE=/var/lib/haki-backup
+LOCK=/run/lock/haki-usb-backup.lock
+NODE=$(hostname)
+
+log() { echo "haki-usb-backup: $*"; }
+
+set_notes() {
+  local line="$1" cur
+  cur=$(pvesh get "/nodes/$NODE/config" --output-format json \
+        | perl -CO -MJSON -0e 'print decode_json(<STDIN>)->{description} // ""')
+  cur=$(printf '%s' "$cur" | grep -v '^\*\*USB backup' || true)
+  pvesh set "/nodes/$NODE/config" --description "$line"$'\n\n'"$cur"
+}
+
+refresh_status() {
+  local last now age_days due
+  if [[ ! -s $STATE/last-success ]]; then
+    set_notes "**USB backup:** none yet — plug in the backup drive."
+    return
+  fi
+  last=$(cat "$STATE/last-success")
+  now=$(date +%s)
+  age_days=$(( (now - last) / 86400 ))
+  due=$(date -d "@$(( last + DUE_DAYS * 86400 ))" '+%a %d %b')
+  if (( age_days >= DUE_DAYS )); then
+    set_notes "**USB backup: OVERDUE** — last one $(date -d "@$last" '+%d %b %H:%M') ($age_days days ago). Plug in the backup drive."
+  else
+    set_notes "**USB backup:** last OK $(date -d "@$last" '+%d %b %H:%M'), next due $due."
+  fi
+}
+
+if [[ ${1:-} == --status ]]; then refresh_status; exit 0; fi
+
+exec 9>"$LOCK"
+flock -n 9 || { log "a backup is already running"; exit 0; }
+mkdir -p "$STATE" "$MNT"
+
+if [[ -s $STATE/last-success ]] && (( $(date +%s) - $(cat "$STATE/last-success") < MIN_GAP_HOURS * 3600 )); then
+  log "last backup was under ${MIN_GAP_HOURS}h ago; skipping"
+  exit 0
+fi
+
+finish() {
+  local rc=$?
+  sync
+  if mountpoint -q "$MNT"; then umount "$MNT" && log "drive unmounted — safe to unplug"; fi
+  if (( rc != 0 )); then
+    set_notes "**USB backup: FAILED** at $(date '+%d %b %H:%M') — see: journalctl -u haki-usb-backup"
+  fi
+}
+trap finish EXIT
+
+sleep 5 # let the drive settle after plug-in
+mountpoint -q "$MNT" || mount -t exfat -o noatime "UUID=$UUID" "$MNT"
+[[ -d $MNT/Server ]] || { log "no Server folder on the drive; refusing to write"; exit 1; }
+mkdir -p "$DIR"
+
+free_gb=$(df --output=avail -BG "$MNT" | tail -1 | tr -dc '0-9')
+(( free_gb >= MIN_FREE_GB )) || { log "only ${free_gb} GB free on the drive (minimum ${MIN_FREE_GB})"; exit 1; }
+
+set_notes "**USB backup: RUNNING** since $(date '+%d %b %H:%M') — don't unplug the drive."
+
+log "backing up host config"
+tar -czf "$DIR/host-config-$(date +%Y_%m_%d-%H_%M_%S).tar.gz" \
+  /etc/pve /etc/network/interfaces /etc/hosts /etc/hostname /etc/fstab \
+  /etc/udev/rules.d /etc/systemd/system /usr/local/sbin /etc/modprobe.d /etc/default/grub 2>/dev/null || true
+
+log "backing up all VMs"
+vzdump --all 1 --mode snapshot --compress zstd --dumpdir "$DIR" --mailnotification failure
+
+# Keep the newest $KEEP of each backup type; only ever delete files this script created.
+prune() {
+  local pattern="$1" f
+  mapfile -t old < <(find "$DIR" -maxdepth 1 -type f -name "$pattern" -printf '%f\n' | sort -r | tail -n +$((KEEP + 1)))
+  for f in "${old[@]}"; do
+    rm -f -- "$DIR/$f" "$DIR/${f%%.*}.log" "$DIR/${f%%.*}.notes"
+    log "pruned $f"
+  done
+}
+for id in $(qm list | awk 'NR > 1 { print $1 }'); do prune "vzdump-qemu-$id-*.vma.zst"; done
+for id in $(pct list | awk 'NR > 1 { print $1 }'); do prune "vzdump-lxc-$id-*.tar.zst"; done
+prune 'host-config-*.tar.gz'
+
+date +%s > "$STATE/last-success"
+refresh_status
+log "backup complete"

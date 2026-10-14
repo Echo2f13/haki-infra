@@ -1,0 +1,12 @@
+[Unit]
+Description=Haki customer network firewall and NAT
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/haki-net apply
+
+[Install]
+WantedBy=multi-user.target

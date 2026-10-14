@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# haki-new — create a Haki customer container on the isolated customer network.
+# Usage: haki-new <id 201-250> <name> [nano|small|medium]
+#   IP   = 10.10.0.(id-100)      published port on the host = 20000+id -> container :80
+cd /
+set -euo pipefail
+
+TEMPLATE=debian-13-standard_13.6-1_amd64.tar.zst
+die() { echo "haki-new: $*" >&2; exit 1; }
+
+[[ $# -ge 2 ]] || die "usage: haki-new <id 201-250> <name> [nano|small|medium]"
+ID=$1 NAME=$2 PLAN=${3:-small}
+[[ $ID =~ ^[0-9]+$ ]] && (( ID >= 201 && ID <= 250 )) || die "id must be 201-250"
+[[ $NAME =~ ^[a-z0-9][a-z0-9-]{1,29}$ ]] || die "name: 2-30 lowercase letters, digits, dashes"
+if pct status "$ID" &>/dev/null || qm status "$ID" &>/dev/null; then die "id $ID already exists"; fi
+
+#            cores cpulimit memMB swapMB diskGB
+case $PLAN in
+  nano)   set -- 1 0.25 256  128 5  ;;
+  small)  set -- 1 0.5  512  256 10 ;;
+  medium) set -- 2 1    1024 512 20 ;;
+  *) die "plan must be nano, small or medium" ;;
+esac
+CORES=$1 CPULIMIT=$2 MEM=$3 SWAP=$4 DISK=$5
+IP=10.10.0.$((ID - 100))
+PORT=$((20000 + ID))
+
+if ! pveam list local | grep -q "$TEMPLATE"; then
+  pveam update >/dev/null
+  pveam download local "$TEMPLATE"
+fi
+
+pct create "$ID" "local:vztmpl/$TEMPLATE" \
+  --hostname "$NAME" --ostype debian --unprivileged 1 --features nesting=1 \
+  --cores "$CORES" --cpulimit "$CPULIMIT" --memory "$MEM" --swap "$SWAP" \
+  --rootfs "local-lvm:$DISK" \
+  --net0 "name=eth0,bridge=vmbr1,ip=$IP/24,gw=10.10.0.1,firewall=0" \
+  --nameserver "1.1.1.1 9.9.9.9" \
+  --hookscript local:snippets/haki-isolate.sh \
+  --tags "haki;customer;plan-$PLAN" \
+  --description "Haki customer **$NAME** — plan $PLAN — $IP — published on 192.168.1.240:$PORT" \
+  --onboot 1 --start 1
+
+# The customer network is IPv4-only; prefer IPv4 so apps don't stall on IPv6 first.
+pct exec "$ID" -- sh -c 'echo "precedence ::ffff:0:0/96 100" >> /etc/gai.conf
+  echo "Acquire::ForceIPv4 \"true\";" > /etc/apt/apt.conf.d/99haki-ipv4'
+
+haki-net add "$PORT" "$IP" 80
+
+cat <<EOF
+
+Created $NAME (CT $ID, plan $PLAN): $IP, $CORES core(s) capped at $CPULIMIT, ${MEM} MB RAM, ${DISK} GB disk.
+Shell:     pct enter $ID
+Published: http://192.168.1.240:$PORT  ->  $IP:80   (reachable only from the edge VM)
+To give it a public hostname, add to /etc/cloudflared/config.yml on the edge VM (above the 404 rule):
+  - hostname: <name>.<domain>
+    service: http://192.168.1.240:$PORT
+EOF

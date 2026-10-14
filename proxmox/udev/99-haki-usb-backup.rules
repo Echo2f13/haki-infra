@@ -1,0 +1,2 @@
+# Plugging in the backup drive (exFAT "Wado Ichimo") starts a backup.
+ACTION=="add", SUBSYSTEM=="block", ENV{ID_FS_UUID}=="83F6-DBB2", TAG+="systemd", ENV{SYSTEMD_WANTS}+="haki-usb-backup.service"
