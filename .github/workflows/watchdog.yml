@@ -1,0 +1,57 @@
+# External watchdog: catches what haki-watch can't — the whole home server or its internet being down.
+# Alerts Discord only when the result changes (up -> down, down -> up).
+name: Watchdog
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: watchdog
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check kotamanish.dev from outside
+        id: site
+        run: |
+          if curl -fsS --max-time 20 --retry 3 --retry-delay 20 --retry-all-errors \
+               https://kotamanish.dev/version.json > /dev/null; then
+            echo "up=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "up=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Previous result
+        id: prev
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prev=$(gh run list -R "$GITHUB_REPOSITORY" --workflow watchdog.yml --status completed --limit 1 \
+                   --json conclusion --jq '.[0].conclusion // "success"')
+          echo "conclusion=$prev" >> "$GITHUB_OUTPUT"
+
+      - name: Alert on change
+        env:
+          WEBHOOK: ${{ secrets.HAKI_DISCORD_WEBHOOK }}
+          UP: ${{ steps.site.outputs.up }}
+          PREV: ${{ steps.prev.outputs.conclusion }}
+        run: |
+          msg=""
+          if [[ $UP == false && $PREV == success ]]; then
+            msg="**[DOWN]** kotamanish.dev is unreachable from the internet (checked from GitHub). The home server, its power or its internet may be down."
+          elif [[ $UP == true && $PREV == failure ]]; then
+            msg="**[RECOVERED]** kotamanish.dev is reachable from the internet again."
+          fi
+          if [[ -n $msg ]]; then
+            jq -n --arg c "$msg" '{content: $c}' | curl -fsS -H 'Content-Type: application/json' -d @- "$WEBHOOK"
+          fi
+          [[ $UP == true ]]

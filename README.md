@@ -44,6 +44,17 @@ Proxmox → haki → Notes.
 
 Boot order after a power cut: VM 100 first, then VM 101 (30 s later), then customer containers.
 
+**Monitoring** — alerts go to a Discord channel (webhook in `/etc/haki/alerts.env` on the host and
+the `HAKI_DISCORD_WEBHOOK` repo secret; never committed):
+
+- `haki-watch` (host, every 2 min): public site, guests set to start on boot, ollama API, customer
+  services in `/etc/haki/services.conf`, host disk / storage pool / RAM / failed services / SSD SMART,
+  customer firewall loaded, USB backup older than 8 days. Alerts on DOWN, every 12 h while down,
+  and on RECOVERED.
+- `.github/workflows/watchdog.yml` (GitHub, every ~10 min): checks kotamanish.dev from outside,
+  so you still hear about it when the whole house is offline. GitHub pauses scheduled workflows
+  after 60 days without repo activity — re-enable under Actions if that happens.
+
 ## Plans
 
 | Plan | CPU | RAM | Disk |

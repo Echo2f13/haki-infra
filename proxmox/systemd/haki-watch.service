@@ -1,0 +1,8 @@
+[Unit]
+Description=Haki health checks and Discord alerts
+After=pve-guests.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/haki-watch
+TimeoutStartSec=5min

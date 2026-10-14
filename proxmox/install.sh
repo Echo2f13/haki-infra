@@ -17,6 +17,9 @@ install -m 0644 systemd/* /etc/systemd/system/
 install -m 0644 udev/* /etc/udev/rules.d/
 install -m 0644 network/haki-customers /etc/network/interfaces.d/
 install -m 0644 sysctl/90-haki.conf /etc/sysctl.d/
+install -d -m 0755 /etc/haki
+[[ -e /etc/haki/services.conf ]] || install -m 0644 etc/services.conf /etc/haki/
+[[ -e /etc/haki/alerts.env ]] || echo "NOTE: create /etc/haki/alerts.env (mode 0600) from etc/alerts.env.example for Discord alerts"
 
 # Key-only SSH: only applied if root already has a key, so this can't lock you out.
 if [[ -s /root/.ssh/authorized_keys ]]; then
@@ -27,7 +30,7 @@ fi
 systemctl daemon-reload
 udevadm control --reload
 # Firewall before the bridge, so vmbr1 never comes up without isolation.
-systemctl enable --now haki-net.service haki-backup-status.timer
+systemctl enable --now haki-net.service haki-backup-status.timer haki-watch.timer
 sysctl -p /etc/sysctl.d/90-haki.conf
 ifreload -a
 haki-usb-backup --status

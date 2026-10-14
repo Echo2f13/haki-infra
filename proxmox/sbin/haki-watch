@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# haki-watch — health checks for the Haki host, guests and customer services (every 2 min).
+# Posts to Discord when a check fails, every 12 h while it stays failed, and when it recovers.
+# Webhook: HAKI_DISCORD_WEBHOOK in /etc/haki/alerts.env (root-only, never in git).
+# Customer services: /etc/haki/services.conf, one "<ctid> <systemd-unit>" per line.
+#   haki-watch          run checks
+#   haki-watch --test   post a test alert
+cd /
+set -uo pipefail
+
+[[ -r /etc/haki/alerts.env ]] && source /etc/haki/alerts.env
+STATE=/var/lib/haki-watch
+REMIND_SECS=$((12 * 3600))
+SITE=https://kotamanish.dev/version.json
+mkdir -p "$STATE"
+
+post() {
+  [[ -n ${HAKI_DISCORD_WEBHOOK:-} ]] || { echo "haki-watch: no webhook configured: $1"; return; }
+  local body
+  body=$(printf '%s' "$1" | perl -MJSON -0e 'print encode_json({content => scalar <STDIN>})')
+  curl -fsS --max-time 10 -H 'Content-Type: application/json' -d "$body" "$HAKI_DISCORD_WEBHOOK" >/dev/null \
+    || echo "haki-watch: webhook post failed"
+}
+
+if [[ ${1:-} == --test ]]; then post "**[TEST]** Alert test from haki-watch on $(hostname)."; exit 0; fi
+
+# report <id> <ok|fail> <message>: alert on state change, remind while failing.
+report() {
+  local id=$1 status=$2 msg=$3 file="$STATE/$1" prev="ok" since=0 old_msg="" now
+  now=$(date +%s)
+  [[ -s $file ]] && read -r prev since old_msg < "$file"
+  if [[ $status == fail ]]; then
+    if [[ $prev != fail ]]; then
+      post "**[DOWN]** $msg"; echo "fail $now $msg" > "$file"
+    elif (( now - since >= REMIND_SECS )); then
+      post "**[STILL DOWN]** $msg"; echo "fail $now $msg" > "$file"
+    fi
+  elif [[ $prev == fail ]]; then
+    post "**[RECOVERED]** ${old_msg:-$id}"; echo "ok $now" > "$file"
+  else
+    echo "ok $now" > "$file"
+  fi
+}
+
+check() { # check <id> <message> <command...>
+  local id=$1 msg=$2; shift 2
+  if "$@" >/dev/null 2>&1; then report "$id" ok "$msg"; else report "$id" fail "$msg"; fi
+}
+
+# --- public site (Cloudflare -> tunnel -> nginx on the edge VM) ---------------
+check site-public "kotamanish.dev is not responding" \
+  curl -fsS --max-time 15 --retry 2 --retry-delay 5 "$SITE"
+
+# --- guests that should be running (onboot=1) --------------------------------
+for id in $(qm list | awk 'NR > 1 { print $1 }'); do
+  qm config "$id" | grep -q '^onboot: 1' || continue
+  name=$(qm config "$id" | awk '/^name:/ { print $2 }')
+  check "vm-$id" "VM $id ($name) is not running" sh -c "qm status $id | grep -q running"
+done
+for id in $(pct list | awk 'NR > 1 { print $1 }'); do
+  pct config "$id" | grep -q '^onboot: 1' || continue
+  name=$(pct config "$id" | awk '/^hostname:/ { print $2 }')
+  check "ct-$id" "Container $id ($name) is not running" sh -c "pct status $id | grep -q running"
+done
+
+check ollama "ollama API on VM 101 is not responding" \
+  curl -fsS --max-time 10 http://192.168.1.35:11434/api/version
+
+# --- customer services --------------------------------------------------------
+if [[ -r /etc/haki/services.conf ]]; then
+  while read -r ctid unit; do
+    [[ -z $ctid || $ctid == \#* ]] && continue
+    check "svc-$ctid-$unit" "Service $unit in container $ctid is down" \
+      pct exec "$ctid" -- systemctl is-active --quiet "$unit"
+  done < /etc/haki/services.conf
+fi
+
+# --- host health ---------------------------------------------------------------
+disk=$(df --output=pcent / | tail -1 | tr -dc '0-9')
+check host-disk "Host root disk is ${disk}% full" test "$disk" -lt 85
+
+pool=$(lvs --noheadings -o data_percent pve/data | tr -d ' ' | cut -d. -f1)
+check host-pool "VM storage pool (local-lvm) is ${pool}% full" test "$pool" -lt 80
+
+avail_mb=$(awk '/^MemAvailable:/ { print int($2 / 1024) }' /proc/meminfo)
+check host-mem "Host has only ${avail_mb} MB RAM available" test "$avail_mb" -gt 1024
+
+failed=$(systemctl --failed --no-legend --plain | awk '{ print $1 }' | tr '\n' ' ')
+check host-units "Failed services on host: ${failed:-none}" test -z "$failed"
+
+check host-ssd "SSD /dev/sda SMART health check failed" sh -c 'smartctl -H /dev/sda | grep -q PASSED'
+
+check haki-net "Customer network firewall (haki-net) is not loaded" nft list table inet haki
+
+# --- backups --------------------------------------------------------------------
+last=$(cat /var/lib/haki-backup/last-success 2>/dev/null || echo 0)
+age_days=$(( ($(date +%s) - last) / 86400 ))
+check backup-age "Last USB backup was ${age_days} days ago — plug in the backup drive" test "$age_days" -lt 8
+
+exit 0
