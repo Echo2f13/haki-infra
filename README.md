@@ -12,8 +12,8 @@ Internet ── Cloudflare (DNS, TLS, CDN) ── Cloudflare Tunnel (outbound on
 Proxmox host "haki" (i5-8400, 6 cores · 16 GB RAM · 480 GB SSD)   192.168.1.240
  │
  ├─ vmbr0  home LAN 192.168.1.0/24 ── your devices, Proxmox UI, router
- │    ├─ VM 100  edge  (192.168.1.34)  cloudflared + nginx, kotamanish.dev, GitHub runner
- │    └─ VM 101  ollama (GPU passthrough)
+ │    ├─ VM 100  edge   (192.168.1.34)  2 GB · cloudflared + nginx, kotamanish.dev, GitHub runner
+ │    └─ VM 101  ollama (192.168.1.35)  4 GB · 4 cores (low CPU priority) · GTX 1050 Ti 4 GB passthrough
  │
  └─ vmbr1  customer network 10.10.0.0/24 (no physical port, NAT out via the host)
       ├─ CT 201  lalith-bot  10.10.0.101
@@ -37,6 +37,12 @@ Inbound: only the edge VM can reach a customer, through `192.168.1.240:<20000+id
 backs up every VM and container plus host config to `Server/proxmox/` on the drive,
 keeps 4 of each, then unmounts. Status and overdue warnings (7 days) appear in
 Proxmox → haki → Notes.
+
+**ollama sizing** (measured, ctx 4096): 1–2B models fit fully in VRAM (1.1–1.9 GB, 33–38 tok/s);
+7B Q4_K_M models use 3.0 GB VRAM + 2.1 GB system RAM (~10 tok/s), one at a time.
+4 GB RAM covers the worst case. With passthrough, the VM's RAM is always fully reserved on the host.
+
+Boot order after a power cut: VM 100 first, then VM 101 (30 s later), then customer containers.
 
 ## Plans
 
