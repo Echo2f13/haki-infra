@@ -76,4 +76,4 @@ the `HAKI_DISCORD_WEBHOOK` repo secret; never committed):
 The edge VM's tooling (nginx, cloudflared, deploy scripts) lives in
 [Echo2f13/portfolio_main](https://github.com/Echo2f13/portfolio_main) under `deploy/server/`.
 
-Day-to-day commands are in [docs/runbook.md](docs/runbook.md).
+Day-to-day commands are in [docs/runbook.md](docs/runbook.md). Current progress and next steps: [docs/status.md](docs/status.md).
